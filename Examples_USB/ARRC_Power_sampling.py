@@ -38,6 +38,9 @@ def PrintPeak(objAnalazyer):
 
     # MAVLink_arrc_sensor_raw_message(time_boot_ms, app_datatype, app_datalength, values)
     ARRC_mav_connection.mav.send(ARRCmavlink.MAVLink_arrc_sensor_raw_message(10,0,2,values))
+    
+    #msg = ARRC_mav_connection.recv_match(blocking=True)
+    #print(str(msg))
 
 
 def ControlSettings(objAnalazyer):
@@ -79,7 +82,10 @@ def ControlSettings(objAnalazyer):
 # global variables and initialization
 #---------------------------------------------------------
 
-ARRC_mav_connection = mavutil.mavlink_connection('udpin:localhost:14551')
+ARRC_mav_connection = mavutil.mavlink_connection('/dev/ttyAMA0', baud=115200, source_system=1, source_component=191) #'udpin:127.0.0.1:14551'
+yay = ARRC_mav_connection.wait_heartbeat()
+ARRC_mav_connection.mav.request_data_stream_send(ARRC_mav_connection.target_system, ARRC_mav_connection.target_component,mavutil.mavlink.MAV_DATA_STREAM_ALL,1,1)
+print("Mavlink connection: "+ str(yay))
 
 SERIALPORT = None    #serial port identifier, use None to autodetect  
 BAUDRATE = 500000
@@ -92,8 +98,8 @@ objRFE.AutoConfigure = False
 #frequency setting are available for your model
 #These freq settings will be updated later in SA condition.
 SPAN_SIZE_MHZ = 50           #Initialize settings
-START_SCAN_MHZ = 500
-STOP_SCAN_MHZ = 900
+START_SCAN_MHZ = 5800
+STOP_SCAN_MHZ = 5850
 
 #---------------------------------------------------------
 # Main processing loop
@@ -125,8 +131,8 @@ try:
         if(objRFE.IsAnalyzer()):
             print("---- Spectrum Analyzer Example ----")
             #update frequency setting. This was added to be compatible with all RFE SA models
-            START_SCAN_MHZ = objRFE.MinFreqMHZ
-            STOP_SCAN_MHZ = START_SCAN_MHZ + 200
+            #START_SCAN_MHZ = objRFE.MinFreqMHZ
+            #STOP_SCAN_MHZ = START_SCAN_MHZ + 200
             #SPAN_SIZE_MHZ = 50 is the minimum span available for RF Explorer SA models
 
             #Control settings
@@ -147,84 +153,19 @@ try:
                             nInd += 1
                             print("Freq range["+ str(nInd) + "]: " + str(StartFreq) +" - "+ str(StopFreq) + "MHz" )
                             PrintPeak(objRFE)
-                        if(math.fabs(objRFE.StartFrequencyMHZ - StartFreq) <= 0.001):
-                                break
+                    #     if(math.fabs(objRFE.StartFrequencyMHZ - StartFreq) <= 0.001):
+                    #             break
   
-                    #set new frequency range
-                    StartFreq = StopFreq
-                    StopFreq = StartFreq + SpanSize
-                    if (StopFreq > STOP_SCAN_MHZ):
-                        StopFreq = STOP_SCAN_MHZ
+                    # #set new frequency range
+                    # StartFreq = StopFreq
+                    # StopFreq = StartFreq + SpanSize
+                    # if (StopFreq > STOP_SCAN_MHZ):
+                    #     StopFreq = STOP_SCAN_MHZ
 
-                    if (StartFreq >= StopFreq):
-                        break
+                    # if (StartFreq >= StopFreq):
+                    #     break
             else:
                 print("Error: settings are wrong.\nPlease, change and try again")
-        else:
-            print("---- Signal Generator Example ----")
-            #request internal calibration data, if available
-            objRFE.SendCommand("Cq")
-            objRFE6GENCal = objRFE.GetRFE6GENCal() #Object to manage the calibration data from generator
-            while (objRFE6GENCal.GetCalSize() < 0):    
-                objRFE.ProcessReceivedString(True)    #Process the received configuration
-
-            objRFE.RFGenCWFrequencyMHZ = 500;
-            if(objRFE.ExpansionBoardActive):
-                #Amplitude sweep
-                objRFE.RFGenExpansionPowerDBM = -40
-                objRFE.RFGenExpansionPowerStartDBM = -40
-                objRFE.RFGenExpansionPowerStepDB = 5
-                objRFE.RFGenExpansionPowerStopDBM = -20
-                objRFE.RFGenStepWaitMS = 500
-                sStartDBM = str(objRFE.RFGenExpansionPowerStartDBM)
-                sStopDBM = str(objRFE.RFGenExpansionPowerStopDBM)
-                sSteps = str(objRFE.RFGenExpansionPowerStepDB)
-            else:
-                objRFE.RFGenStartHighPowerSwitch = False
-                objRFE.RFGenStopHighPowerSwitch = True
-                objRFE.RFGenStartPowerLevel = 0
-                objRFE.RFGenStopPowerLevel = 3
-                objRFE.RFGenSweepSteps = 5
-                objRFE.RFGenStepWaitMS = 500
-                arrAmplitudeDBM = objRFE6GENCal.GetEstimatedAmplitudeArray(objRFE.RFGenCWFrequencyMHZ)
-                sStartDBM = str(arrAmplitudeDBM[0]) #min 
-                sStopDBM = str(arrAmplitudeDBM[len(arrAmplitudeDBM) - 1]) #max
-                sSteps = str(objRFE.RFGenSweepSteps)
-
-
-            print("Amplitude Sweep Settings = Start:" + sStartDBM + "dBm" + " - Stop:" + sStopDBM + "dBm" + 
-                  " - Steps:" + sSteps + " - Delay:" + str(objRFE.RFGenStepWaitMS) + "ms" + " - CW:" + str(objRFE.RFGenCWFrequencyMHZ) + "MHz")
-
-            print("Amplitude sweep ON")
-            objRFE.SendCommand_GeneratorSweepAmplitude()
-            time.sleep(5)
-            objRFE.SendCommand_GeneratorRFPowerOFF()
-            print("Amplitude sweep OFF")
-
-            time.sleep(2)
-
-            #Frequency sweep
-            if(objRFE.ExpansionBoardActive):
-                objRFE.RFGenExpansionPowerDBM = -40
-                sPowerDBM = " - Power:" + str(objRFE.RFGenExpansionPowerDBM) + "dBm"               
-            else:
-                objRFE.RFGenHighPowerSwitch = False
-                objRFE.RFGenPowerLevel = 0
-                sPowerDBM = " - Power:" + str(objRFE.GetSignalGeneratorEstimatedAmplitude(objRFE.RFGenCWFrequencyMHZ)) + "dBm"
-            objRFE.RFGenStartFrequencyMHZ = 495.0
-            objRFE.RFGenStopFrequencyMHZ = 505.0
-            objRFE.RFGenExpansionPowerDBM = -40.0
-            objRFE.RFGenSweepSteps = 11
-            objRFE.RFGenStepWaitMS = 500
-
-            print("Frequency Sweep Settings = Start:" + str(objRFE.StartFrequencyMHZ) + "MHz" + " - Stop:" + str(objRFE.StopFrequencyMHZ) + "MHz" + 
-                  " - Steps:" + str(objRFE.RFGenSweepSteps) + " - Delay:" + str(objRFE.RFGenStepWaitMS) + "ms" + sPowerDBM)
-
-            print("Frequency sweep ON")
-            objRFE.SendCommand_GeneratorSweepFreq()
-            time.sleep(5)
-            objRFE.SendCommand_GeneratorRFPowerOFF()
-            print("Frequency sweep OFF")
     else:
         print("Not Connected")
 except Exception as obEx:

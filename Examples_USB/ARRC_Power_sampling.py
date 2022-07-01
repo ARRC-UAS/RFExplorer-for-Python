@@ -1,3 +1,4 @@
+
 #pylint: disable=trailing-whitespace, line-too-long, bad-whitespace, invalid-name, R0204, C0200
 #pylint: disable=superfluous-parens, missing-docstring, broad-except, R0801
 #pylint: disable=too-many-lines, too-many-instance-attributes, too-many-statements, too-many-nested-blocks
@@ -15,7 +16,6 @@ import RFExplorer
 from RFExplorer import RFE_Common 
 import math
 from pymavlink import mavutil
-from pymavlink.dialects.v20 import ARRCdialect as ARRCmavlink
 
 #---------------------------------------------------------
 # Helper functions
@@ -31,16 +31,8 @@ def PrintPeak(objAnalazyer):
     fCenterFreq = objSweepTemp.GetFrequencyMHZ(nStep)   #Get frequency of the peak
     fCenterFreq = math.floor(fCenterFreq * 10 ** 3) / 10 ** 3   #truncate to 3 decimals
 
-    print("     Peak: " + "{0:.3f}".format(fCenterFreq) + "MHz  " + str(fAmplitudeDBM) + "dBm")
-
-    # Create array with values to send over mavlink
-    values = [fCenterFreq, fAmplitudeDBM, 0, 0, 0]
-
-    # MAVLink_arrc_sensor_raw_message(time_boot_ms, app_datatype, app_datalength, values)
-    ARRC_mav_connection.mav.send(ARRCmavlink.MAVLink_arrc_sensor_raw_message(10,0,2,values))
-    
-    #msg = ARRC_mav_connection.recv_match(blocking=True)
-    #print(str(msg))
+    # Pack ARRC's message and send it
+    ARRC_mav_connection.mav.arrc_sensor_raw_send(10,0,fCenterFreq,fAmplitudeDBM)
 
 
 def ControlSettings(objAnalazyer):
@@ -81,12 +73,6 @@ def ControlSettings(objAnalazyer):
 #---------------------------------------------------------
 # global variables and initialization
 #---------------------------------------------------------
-
-ARRC_mav_connection = mavutil.mavlink_connection('/dev/ttyAMA0', baud=115200, source_system=1, source_component=191) #'udpin:127.0.0.1:14551'
-yay = ARRC_mav_connection.wait_heartbeat()
-ARRC_mav_connection.mav.request_data_stream_send(ARRC_mav_connection.target_system, ARRC_mav_connection.target_component,mavutil.mavlink.MAV_DATA_STREAM_ALL,1,1)
-print("Mavlink connection: "+ str(yay))
-
 SERIALPORT = None    #serial port identifier, use None to autodetect  
 BAUDRATE = 500000
 
@@ -135,35 +121,57 @@ try:
             #STOP_SCAN_MHZ = START_SCAN_MHZ + 200
             #SPAN_SIZE_MHZ = 50 is the minimum span available for RF Explorer SA models
 
+            # Start connection with Pixhawk through Mavlink
+            ARRC_mav_connection = mavutil.mavserial('/dev/serial0', baud=115200, source_system=1, source_component=191)
+            
+            # Wait for hearbeat from Pixhawk
+            PX4_beat = ARRC_mav_connection.wait_heartbeat()
+            print("Mavlink connection: "+ str(PX4_beat))
+            print("Heartbeat system: sysID %u compID %u" % (ARRC_mav_connection.target_system, ARRC_mav_connection.target_component))
+            
+            # Send RPi heartbeat to confirm handshake
+            ARRC_mav_connection.mav.heartbeat_send(mavutil.mavlink.MAV_TYPE_ONBOARD_CONTROLLER, mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0)
+
+            # Wait for config message 
+            msg = ARRC_mav_connection.recv_match(type='ARRC_SENSOR_RAW', blocking=True)
+            if not msg:
+                START_SCAN_MHZ = 5800
+                STOP_SCAN_MHZ = 5850
+            elif msg.get_type() == "BAD_DATA":
+                START_SCAN_MHZ = 5800
+                STOP_SCAN_MHZ = 5850
+            else:
+                START_SCAN_MHZ = msg.dfreq - 25
+                STOP_SCAN_MHZ = msg.dfreq + 25
+
             #Control settings
             SpanSize, StartFreq, StopFreq = ControlSettings(objRFE)
             if(SpanSize and StartFreq and StopFreq):
-                nInd = 0
+                last_beat = time.time()
+                last_RAM_reset = time.time()
+                
+                #Set new configuration into device
+                objRFE.UpdateDeviceConfig(StartFreq, StopFreq)
+                objSweep=None
                 while (True): 
-                    #Set new configuration into device
-                    objRFE.UpdateDeviceConfig(StartFreq, StopFreq)
 
-                    objSweep=None
-                    #Wait for new configuration to arrive (as it will clean up old sweep data)
-                    while(True):
-                        objRFE.ProcessReceivedString(True);
-                        if (objRFE.SweepData.Count>0):
-                            objSweep=objRFE.SweepData.GetData(objRFE.SweepData.Count-1)
+                    # Clear the RAM every once in a while
+                    if(time.time() - last_RAM_reset > 10):
+                        objRFE.CleanSweepData()
+                        objRFE.ResetInternalBuffers()
+                        last_RAM_reset = time.time()
 
-                            nInd += 1
-                            print("Freq range["+ str(nInd) + "]: " + str(StartFreq) +" - "+ str(StopFreq) + "MHz" )
-                            PrintPeak(objRFE)
-                    #     if(math.fabs(objRFE.StartFrequencyMHZ - StartFreq) <= 0.001):
-                    #             break
-  
-                    # #set new frequency range
-                    # StartFreq = StopFreq
-                    # StopFreq = StartFreq + SpanSize
-                    # if (StopFreq > STOP_SCAN_MHZ):
-                    #     StopFreq = STOP_SCAN_MHZ
+                    # Send Heartbeat to Pixhawk every second
+                    if(time.time() - last_beat > 0.95):
+                        ARRC_mav_connection.mav.heartbeat_send(mavutil.mavlink.MAV_TYPE_ONBOARD_CONTROLLER, mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0)
+                        last_beat = time.time()
 
-                    # if (StartFreq >= StopFreq):
-                    #     break
+                    # Read the RFExplorer and send data over Mavlink
+                    objRFE.ProcessReceivedString(True)
+                    if (objRFE.SweepData.Count>0):
+                        objSweep=objRFE.SweepData.GetData(objRFE.SweepData.Count-1)
+                        PrintPeak(objRFE)
+            
             else:
                 print("Error: settings are wrong.\nPlease, change and try again")
     else:

@@ -15,6 +15,8 @@ import time
 import RFExplorer
 from RFExplorer import RFE_Common 
 import math
+import numpy
+import scipy.optimize as optimization
 from pymavlink import mavutil
 
 #---------------------------------------------------------
@@ -30,6 +32,23 @@ def PrintPeak(objAnalazyer):
     fAmplitudeDBM = objSweepTemp.GetAmplitude_DBM(nStep)    #Get amplitude of the peak
     fCenterFreq = objSweepTemp.GetFrequencyMHZ(nStep)   #Get frequency of the peak
     fCenterFreq = math.floor(fCenterFreq * 10 ** 3) / 10 ** 3   #truncate to 3 decimals
+
+    # Interpolate bins adjacent to the peak
+    if(nStep != 0 & nStep != 111):
+        fAmplitudeDBM_bef = objSweepTemp.GetAmplitude_DBM(nStep-1)
+        fAmplitudeDBM_aft = objSweepTemp.GetAmplitude_DBM(nStep+1)
+        fCenterFreq_bef = objSweepTemp.GetFrequencyMHZ(nStep-1)   #Get frequency of the peak
+        fCenterFreq_bef = math.floor(fCenterFreq_bef * 10 ** 3) / 10 ** 3   #truncate to 3 decimals
+        fCenterFreq_aft = objSweepTemp.GetFrequencyMHZ(nStep+1)   #Get frequency of the peak
+        fCenterFreq_aft = math.floor(fCenterFreq_aft * 10 ** 3) / 10 ** 3   #truncate to 3 decimals
+        
+        ydata = numpy.array([fAmplitudeDBM_bef, fAmplitudeDBM, fAmplitudeDBM_aft])
+        xdata = numpy.array([fCenterFreq_bef, fCenterFreq, fCenterFreq_aft])
+        fit = numpy.polyfit(xdata, ydata, 2)
+
+        if(fit[0] < 0):
+            k = -fit[1]/(2*fit[0])
+            fAmplitudeDBM = fit[0]*k**2 + fit[1]*k + fit[2]
 
     # Pack ARRC's message and send it
     ARRC_mav_connection.mav.arrc_sensor_raw_send(10,0,fCenterFreq,fAmplitudeDBM)
@@ -83,9 +102,12 @@ objRFE.AutoConfigure = False
 #Check RFE SA Comparation chart from www.rf-explorer.com\models to know what
 #frequency setting are available for your model
 #These freq settings will be updated later in SA condition.
-SPAN_SIZE_MHZ = 50           #Initialize settings
-START_SCAN_MHZ = 5800
-STOP_SCAN_MHZ = 5850
+SPAN_SIZE_MHZ = 20           #Initialize settings
+START_SCAN_MHZ = 2990
+STOP_SCAN_MHZ = 3010
+FFT_Points = 512   # FFT points. Must be multiple of 2.
+LNA_25dB = RFE_Common.eInputStage.LNA_25dB
+CalcMode = 0    # 0: Normal, 2: Average
 
 #---------------------------------------------------------
 # Main processing loop
@@ -121,6 +143,16 @@ try:
             #STOP_SCAN_MHZ = START_SCAN_MHZ + 200
             #SPAN_SIZE_MHZ = 50 is the minimum span available for RF Explorer SA models
 
+            objRFE.SendCommand("C+" + chr(int(CalcMode & 0xFF)))    # Calculator mode
+            time.sleep(3)
+            objRFE.SendCommand("Cp2")       # DSP: fast
+            time.sleep(3)
+            objRFE.SendCommand("Cj" + chr(int((FFT_Points & 0xFF00) >> 8)) + chr(int(FFT_Points & 0xFF)))
+            time.sleep(3)
+            objRFE.SendCommand("a" + str(LNA_25dB.value))  # Enable LNA 25dB
+            time.sleep(3)
+
+
             # Start connection with Pixhawk through Mavlink
             ARRC_mav_connection = mavutil.mavserial('/dev/serial0', baud=115200, source_system=1, source_component=191)
             
@@ -135,14 +167,14 @@ try:
             # Wait for config message 
             msg = ARRC_mav_connection.recv_match(type='ARRC_SENSOR_RAW', blocking=True)
             if not msg:
-                START_SCAN_MHZ = 5800
-                STOP_SCAN_MHZ = 5850
+                START_SCAN_MHZ = 2990
+                STOP_SCAN_MHZ = 3010
             elif msg.get_type() == "BAD_DATA":
-                START_SCAN_MHZ = 5800
-                STOP_SCAN_MHZ = 5850
+                START_SCAN_MHZ = 2990
+                STOP_SCAN_MHZ = 3010
             else:
-                START_SCAN_MHZ = msg.dfreq - 25
-                STOP_SCAN_MHZ = msg.dfreq + 25
+                START_SCAN_MHZ = msg.dfreq - 10
+                STOP_SCAN_MHZ = msg.dfreq + 10
 
             #Control settings
             SpanSize, StartFreq, StopFreq = ControlSettings(objRFE)
